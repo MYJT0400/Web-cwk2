@@ -7,6 +7,7 @@ from pathlib import Path
 
 from crawler import QuotesCrawler
 from indexer import InvertedIndexer
+from search import SearchEngine, SearchError
 
 
 def build_command(args: argparse.Namespace) -> int:
@@ -44,6 +45,50 @@ def build_command(args: argparse.Namespace) -> int:
         f"{indexer.stats.total_terms} terms, "
         f"{indexer.stats.total_tokens} tokens"
     )
+    return 0
+
+
+def load_command(args: argparse.Namespace) -> int:
+    index_path = Path(args.index_path)
+    engine = SearchEngine.from_file(index_path)
+    print(f"Loaded index from: {index_path}")
+    print(
+        "Index summary: "
+        f"{engine.metadata['total_pages']} pages, "
+        f"{engine.metadata['total_terms']} terms, "
+        f"{engine.metadata['total_tokens']} tokens"
+    )
+    return 0
+
+
+def print_command(args: argparse.Namespace) -> int:
+    engine = SearchEngine.from_file(Path(args.index_path))
+    postings = engine.print_term(args.word)
+    if not postings:
+        print(f"No entries found for word: {args.word!r}")
+        return 0
+
+    print(f"Word: {args.word!r}")
+    for url, stats in sorted(postings.items()):
+        frequency = int(stats["frequency"])
+        positions = stats["positions"]
+        print(f"- {url}")
+        print(f"  frequency={frequency}")
+        print(f"  positions={positions}")
+    return 0
+
+
+def find_command(args: argparse.Namespace) -> int:
+    engine = SearchEngine.from_file(Path(args.index_path))
+    urls = engine.find(args.query)
+    if not urls:
+        print(f"No pages found for query: {args.query!r}")
+        return 0
+
+    print(f"Query: {args.query!r}")
+    print("Matched pages:")
+    for idx, url in enumerate(urls, start=1):
+        print(f"{idx}. {url}")
     return 0
 
 
@@ -101,13 +146,45 @@ def create_parser() -> argparse.ArgumentParser:
     )
     build.set_defaults(func=build_command)
 
+    load = subparsers.add_parser("load", help="Load index file and show summary.")
+    load.add_argument(
+        "--index-path",
+        default="data/inverted_index.json",
+        help="Path to compiled inverted index file.",
+    )
+    load.set_defaults(func=load_command)
+
+    print_term = subparsers.add_parser(
+        "print", help="Print postings for one word from the loaded index file."
+    )
+    print_term.add_argument("word", help="Single word to inspect in index.")
+    print_term.add_argument(
+        "--index-path",
+        default="data/inverted_index.json",
+        help="Path to compiled inverted index file.",
+    )
+    print_term.set_defaults(func=print_command)
+
+    find = subparsers.add_parser("find", help="Find pages that contain query terms.")
+    find.add_argument("query", help="Search query phrase.")
+    find.add_argument(
+        "--index-path",
+        default="data/inverted_index.json",
+        help="Path to compiled inverted index file.",
+    )
+    find.set_defaults(func=find_command)
+
     return parser
 
 
 def main() -> int:
     parser = create_parser()
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except SearchError as exc:
+        print(f"Error: {exc}")
+        return 1
 
 
 if __name__ == "__main__":

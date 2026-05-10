@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from time import monotonic, sleep
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -46,7 +47,7 @@ class QuotesCrawler:
 
     def crawl(self, max_pages: int | None = None) -> list[PageData]:
         """
-        Crawl the quotes website and collect text content per page.
+        Crawl the entire quotes site and collect text content per page.
 
         Args:
             max_pages: Optional limit for local testing.
@@ -55,21 +56,29 @@ class QuotesCrawler:
             A list of page payloads with URL and plain text.
         """
         page_data: list[PageData] = []
-        next_url = self.base_url
+        start_url = self._normalize_url(self.base_url)
+        base_host = urlparse(start_url).netloc
+        queue: deque[str] = deque([start_url])
         visited: set[str] = set()
 
-        while next_url and next_url not in visited:
+        while queue:
             if max_pages is not None and len(page_data) >= max_pages:
                 break
 
-            visited.add(next_url)
-            html = self._fetch_with_retry(next_url)
+            current_url = queue.popleft()
+            if current_url in visited:
+                continue
+
+            visited.add(current_url)
+            html = self._fetch_with_retry(current_url)
             soup = BeautifulSoup(html, "html.parser")
 
             text = self._extract_page_text(soup)
-            page_data.append(PageData(url=next_url, text=text))
+            page_data.append(PageData(url=current_url, text=text))
 
-            next_url = self._get_next_page_url(soup, next_url)
+            for discovered in self._discover_links(soup, current_url, base_host):
+                if discovered not in visited:
+                    queue.append(discovered)
 
         return page_data
 
@@ -112,30 +121,39 @@ class QuotesCrawler:
 
     @staticmethod
     def _extract_page_text(soup: BeautifulSoup) -> str:
-        quote_blocks = soup.select("div.quote")
-        segments: list[str] = []
-
-        for quote in quote_blocks:
-            text_node = quote.select_one("span.text")
-            author_node = quote.select_one("small.author")
-            tags = [tag.get_text(strip=True) for tag in quote.select("div.tags a.tag")]
-
-            if text_node:
-                segments.append(text_node.get_text(strip=True))
-            if author_node:
-                segments.append(author_node.get_text(strip=True))
-            if tags:
-                segments.append(" ".join(tags))
-
-        return "\n".join(segments).strip()
+        # Extract visible text for all pages so author/tag pages are not empty.
+        for element in soup.select("script, style, noscript"):
+            element.decompose()
+        return soup.get_text(separator=" ", strip=True)
 
     @staticmethod
-    def _get_next_page_url(soup: BeautifulSoup, current_url: str) -> str | None:
-        next_link = soup.select_one("li.next a")
-        if not next_link:
-            return None
-        href = next_link.get("href")
-        if not href:
-            return None
-        return urljoin(current_url, href)
+    def _normalize_url(url: str) -> str:
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        normalized = parsed._replace(query="", fragment="", path=path)
+        return urlunparse(normalized)
 
+    def _discover_links(
+        self,
+        soup: BeautifulSoup,
+        current_url: str,
+        base_host: str,
+    ) -> list[str]:
+        discovered: list[str] = []
+        seen_local: set[str] = set()
+        for anchor in soup.select("a[href]"):
+            href = anchor.get("href", "").strip()
+            if not href:
+                continue
+            absolute = urljoin(current_url, href)
+            normalized = self._normalize_url(absolute)
+            parsed = urlparse(normalized)
+            if parsed.scheme not in ("http", "https"):
+                continue
+            if parsed.netloc != base_host:
+                continue
+            if normalized in seen_local:
+                continue
+            seen_local.add(normalized)
+            discovered.append(normalized)
+        return discovered

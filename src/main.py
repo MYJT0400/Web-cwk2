@@ -80,12 +80,13 @@ def print_command(args: argparse.Namespace) -> int:
 
 def find_command(args: argparse.Namespace) -> int:
     engine = SearchEngine.from_file(Path(args.index_path))
-    urls = engine.find(args.query)
+    query = " ".join(args.query_terms)
+    urls = engine.find(query)
     if not urls:
-        print(f"No pages found for query: {args.query!r}")
+        print(f"No pages found for query: {query!r}")
         return 0
 
-    print(f"Query: {args.query!r}")
+    print(f"Query: {query!r}")
     print("Matched pages:")
     for idx, url in enumerate(urls, start=1):
         print(f"{idx}. {url}")
@@ -166,7 +167,11 @@ def create_parser() -> argparse.ArgumentParser:
     print_term.set_defaults(func=print_command)
 
     find = subparsers.add_parser("find", help="Find pages that contain query terms.")
-    find.add_argument("query", help="Search query phrase.")
+    find.add_argument(
+        "query_terms",
+        nargs="+",
+        help="Search query terms. Example: find good friends",
+    )
     find.add_argument(
         "--index-path",
         default="data/inverted_index.json",

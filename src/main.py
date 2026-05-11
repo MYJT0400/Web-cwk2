@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import shlex
+import sys
 from pathlib import Path
 
 from crawler import QuotesCrawler
@@ -21,23 +23,35 @@ def build_command(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     crawl_output_file = output_dir / args.output_file
     index_output_file = output_dir / args.index_file
+    indexer = InvertedIndexer()
+    crawled_pages = 0
+
+    def _progress(page_count: int, current_url: str, pending_count: int) -> None:
+        if args.verbose:
+            print(
+                f"[crawl] page={page_count} pending={pending_count} url={current_url}",
+                flush=True,
+            )
 
     try:
-        pages = crawler.crawl(max_pages=args.max_pages)
+        with crawl_output_file.open("w", encoding="utf-8") as handle:
+            for page in crawler.iter_crawl_pages(
+                max_pages=args.max_pages,
+                progress_callback=_progress,
+            ):
+                crawled_pages += 1
+                handle.write(f"URL: {page.url}\n")
+                handle.write(page.text)
+                handle.write("\n\n" + ("-" * 80) + "\n\n")
+
+                # Build the index incrementally while crawling.
+                indexer.add_page(page)
     finally:
         crawler.close()
 
-    with crawl_output_file.open("w", encoding="utf-8") as handle:
-        for page in pages:
-            handle.write(f"URL: {page.url}\n")
-            handle.write(page.text)
-            handle.write("\n\n" + ("-" * 80) + "\n\n")
-
-    indexer = InvertedIndexer()
-    indexer.build(pages)
     indexer.save(index_output_file)
 
-    print(f"Crawled pages: {len(pages)}")
+    print(f"Crawled pages: {crawled_pages}")
     print(f"Saved crawl output to: {crawl_output_file}")
     print(f"Saved inverted index to: {index_output_file}")
     print(
@@ -98,6 +112,12 @@ def create_parser() -> argparse.ArgumentParser:
         prog="search_tool",
         description="Coursework 2 search tool CLI.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["once", "shell"],
+        default=None,
+        help="Execution mode: once (run one command), shell (interactive REPL).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build = subparsers.add_parser("build", help="Crawl website and prepare data.")
@@ -145,6 +165,11 @@ def create_parser() -> argparse.ArgumentParser:
         default="inverted_index.json",
         help="Output filename for compiled inverted index.",
     )
+    build.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-page crawl progress during build.",
+    )
     build.set_defaults(func=build_command)
 
     load = subparsers.add_parser("load", help="Load index file and show summary.")
@@ -182,14 +207,71 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    parser = create_parser()
-    args = parser.parse_args()
+def execute_args(args: argparse.Namespace) -> int:
     try:
         return args.func(args)
     except SearchError as exc:
         print(f"Error: {exc}")
         return 1
+
+
+def run_interactive_shell() -> int:
+    parser = create_parser()
+    print("Interactive shell started. Type 'help' for usage, 'exit' to quit.")
+
+    while True:
+        try:
+            raw = input("> ").strip()
+        except EOFError:
+            print()
+            return 0
+        except KeyboardInterrupt:
+            print()
+            continue
+
+        if not raw:
+            continue
+
+        lowered = raw.lower()
+        if lowered in {"exit", "quit"}:
+            return 0
+        if lowered == "help":
+            parser.print_help()
+            continue
+
+        try:
+            tokens = shlex.split(raw)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            continue
+
+        if not tokens:
+            continue
+
+        # In interactive mode, build should show crawl progress by default.
+        if tokens and tokens[0] == "build" and "--verbose" not in tokens:
+            tokens.append("--verbose")
+
+        try:
+            args = parser.parse_args(tokens)
+        except SystemExit:
+            # argparse already printed the error/help.
+            continue
+
+        execute_args(args)
+
+
+def main() -> int:
+    if len(sys.argv) == 1:
+        return run_interactive_shell()
+
+    parser = create_parser()
+    args = parser.parse_args()
+
+    if args.mode == "shell":
+        return run_interactive_shell()
+
+    return execute_args(args)
 
 
 if __name__ == "__main__":

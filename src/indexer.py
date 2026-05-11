@@ -31,26 +31,25 @@ class InvertedIndexer:
         self.index: dict[str, dict[str, dict[str, int | list[int]]]] = {}
         self.stats = IndexStats(total_pages=0, total_terms=0, total_tokens=0)
 
+    def add_page(self, page: "PageData") -> None:
+        """Incrementally add one page into the existing inverted index."""
+        tokens = self._tokenize(page.text)
+        self.stats.total_pages += 1
+        self.stats.total_tokens += len(tokens)
+
+        for position, token in enumerate(tokens):
+            postings = self.index.setdefault(token, {})
+            posting = postings.setdefault(page.url, {"frequency": 0, "positions": []})
+            posting["frequency"] = int(posting["frequency"]) + 1
+            posting["positions"].append(position)
+
+        self.stats.total_terms = len(self.index)
+
     def build(self, pages: list["PageData"]) -> dict[str, dict[str, dict[str, int | list[int]]]]:
-        index: dict[str, dict[str, dict[str, int | list[int]]]] = {}
-        total_tokens = 0
-
+        self.index = {}
+        self.stats = IndexStats(total_pages=0, total_terms=0, total_tokens=0)
         for page in pages:
-            tokens = self._tokenize(page.text)
-            total_tokens += len(tokens)
-
-            for position, token in enumerate(tokens):
-                postings = index.setdefault(token, {})
-                posting = postings.setdefault(page.url, {"frequency": 0, "positions": []})
-                posting["frequency"] = int(posting["frequency"]) + 1
-                posting["positions"].append(position)
-
-        self.index = index
-        self.stats = IndexStats(
-            total_pages=len(pages),
-            total_terms=len(index),
-            total_tokens=total_tokens,
-        )
+            self.add_page(page)
         return self.index
 
     def save(self, output_path: Path) -> None:
@@ -70,4 +69,3 @@ class InvertedIndexer:
     @staticmethod
     def _tokenize(text: str) -> list[str]:
         return [match.group(0).lower() for match in TOKEN_PATTERN.finditer(text)]
-

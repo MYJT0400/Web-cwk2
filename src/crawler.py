@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from time import monotonic, sleep
+from typing import Callable, Iterator
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
@@ -55,14 +56,57 @@ class QuotesCrawler:
         Returns:
             A list of page payloads with URL and plain text.
         """
-        page_data: list[PageData] = []
+        return list(
+            self.iter_crawl_pages(max_pages=max_pages, progress_callback=None)
+        )
+
+    def crawl_with_progress(
+        self,
+        max_pages: int | None = None,
+        progress_callback: Callable[[int, str, int], None] | None = None,
+    ) -> list[PageData]:
+        """
+        Crawl the entire site and optionally report progress after each page.
+
+        Args:
+            max_pages: Optional limit for local testing.
+            progress_callback: Optional callback receiving
+                (crawled_page_count, current_url, pending_queue_count).
+
+        Returns:
+            A list of page payloads with URL and plain text.
+        """
+        return list(
+            self.iter_crawl_pages(
+                max_pages=max_pages,
+                progress_callback=progress_callback,
+            )
+        )
+
+    def iter_crawl_pages(
+        self,
+        max_pages: int | None = None,
+        progress_callback: Callable[[int, str, int], None] | None = None,
+    ) -> Iterator[PageData]:
+        """
+        Yield crawled pages one by one, allowing streaming index construction.
+
+        Args:
+            max_pages: Optional limit for local testing.
+            progress_callback: Optional callback receiving
+                (crawled_page_count, current_url, pending_queue_count).
+
+        Yields:
+            PageData items in crawl order.
+        """
+        page_count = 0
         start_url = self._normalize_url(self.base_url)
         base_host = urlparse(start_url).netloc
         queue: deque[str] = deque([start_url])
         visited: set[str] = set()
 
         while queue:
-            if max_pages is not None and len(page_data) >= max_pages:
+            if max_pages is not None and page_count >= max_pages:
                 break
 
             current_url = queue.popleft()
@@ -74,13 +118,16 @@ class QuotesCrawler:
             soup = BeautifulSoup(html, "html.parser")
 
             text = self._extract_page_text(soup)
-            page_data.append(PageData(url=current_url, text=text))
+            page = PageData(url=current_url, text=text)
+            page_count += 1
+            yield page
 
             for discovered in self._discover_links(soup, current_url, base_host):
                 if discovered not in visited:
                     queue.append(discovered)
 
-        return page_data
+            if progress_callback is not None:
+                progress_callback(page_count, current_url, len(queue))
 
     def close(self) -> None:
         """Release network resources."""
